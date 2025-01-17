@@ -69,15 +69,27 @@ class SlotRollouter(Rollouter):
 
         self.in_proj = nn.Linear(slot_size, d_model)
 
-        enc_layer = nn.TransformerEncoderLayer(
+        enc_layer = ModifiedTransformerEncoderLayer(
             d_model=d_model,
             nhead=num_heads,
             dim_feedforward=ffn_dim,
             norm_first=norm_first,
             batch_first=True,
         )
+
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer=enc_layer, num_layers=num_layers)
+        
+        # store attention weights for each layer
+        self.attention_weights = []
+
+        # hook only works for ModifiedTransformerEncoderLayer which has last_attn_weights
+        def attention_weight_hook(module, input, output):
+            self.attention_weights.append(module.last_attn_weights)
+        
+        for layer in self.transformer_encoder.layers:
+            layer.register_forward_hook(attention_weight_hook)
+
         self.enc_t_pe = build_pos_enc(t_pe, history_len, d_model)
         self.enc_slots_pe = build_pos_enc(slots_pe, num_slots, d_model)
         self.out_proj = nn.Linear(d_model, slot_size)
@@ -93,6 +105,9 @@ class SlotRollouter(Rollouter):
             [B, pred_len, num_slots, slot_size]
         """
         assert x.shape[1] == self.history_len, 'wrong burn-in steps'
+
+        # clear previously saved attention weights
+        self.attention_weights.clear()
 
         B = x.shape[0]
         x = x.flatten(1, 2)  # [B, T * N, slot_size]
@@ -123,6 +138,7 @@ class SlotRollouter(Rollouter):
             # feed the predicted slots autoregressively
             in_x = torch.cat([in_x[:, self.num_slots:], pred_out[-1]], dim=1)
 
+        print(f"saved attention weights: {len(self.attention_weights)}")
         return torch.stack(pred_out, dim=1)
 
     @property
@@ -341,3 +357,25 @@ class SlotFormer(BaseModel):
         self.decoder.eval()
         self.decoder_pos_embedding.eval()
         return self
+
+
+class ModifiedTransformerEncoderLayer(nn.TransformerEncoderLayer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_attn_weights = None
+
+    def forward(self, src, *args, **kwargs):
+        return super().forward(src, *args, **kwargs)
+    
+    def _sa_block(self, x, attn_mask, key_padding_mask, is_causal=False):
+        x, weights = self.self_attn(
+            x,
+            x,
+            x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            is_causal=is_causal,
+        )
+        self.last_attn_weights = weights
+        return self.dropout1(x)
