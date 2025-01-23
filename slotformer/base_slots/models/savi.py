@@ -389,7 +389,7 @@ class StoSAVi(BaseModel):
         init_latents = self.init_latents.repeat(B, 1, 1)  # [B, N, C]
 
         # apply SlotAttn on video frames via reusing slots
-        all_kernel_dist, all_post_slots = [], []
+        all_kernel_dist, all_post_slots, all_attention_weights = [], [], []
         for idx in range(T):
             # init
             if prev_slots is None:
@@ -406,14 +406,24 @@ class StoSAVi(BaseModel):
             post_slots = self.slot_attention(encoder_out[:, idx], kernels)
             all_post_slots.append(post_slots)
 
+            # save attention weights averaged over layers AND heads
+            attn_weights = torch.stack(self.predictor.attention_weights, dim=0)
+            avg_attn_weights = attn_weights.mean(dim=[0,2])
+            # [B, num_slots, num_slots]
+            all_attention_weights.append(avg_attn_weights)
+            
+
             # next timestep
             prev_slots = post_slots
 
         # (B, T, self.num_slots, self.slot_size)
         kernel_dist = torch.stack(all_kernel_dist, dim=1)
         post_slots = torch.stack(all_post_slots, dim=1)
+        all_attention_weights = torch.stack(all_attention_weights, dim=1)
+        # [B, T, num_slots, num_slots]
 
-        return kernel_dist, post_slots, encoder_out
+
+        return kernel_dist, post_slots, encoder_out, all_attention_weights
 
     def _reset_rnn(self):
         self.predictor.reset()
@@ -475,7 +485,7 @@ class StoSAVi(BaseModel):
             self._reset_rnn()
 
         B, T = img.shape[:2]
-        kernel_dist, post_slots, encoder_out = \
+        kernel_dist, post_slots, encoder_out, all_attention_weights = \
             self.encode(img, prev_slots=prev_slots)
         # `slots` has shape: [B, T, self.num_slots, self.slot_size]
 
@@ -483,6 +493,7 @@ class StoSAVi(BaseModel):
             'post_slots': post_slots,  # [B, T, num_slots, C]
             'kernel_dist': kernel_dist,  # [B, T, num_slots, 2C]
             'img': img,  # [B, T, 3, H, W]
+            'attention_weights': all_attention_weights,  # [B, T, num_slots, num_slots]
         }
         if self.testing:
             return out_dict
@@ -544,3 +555,5 @@ class StoSAVi(BaseModel):
     @property
     def device(self):
         return self.slot_attention.device
+
+

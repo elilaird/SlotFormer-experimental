@@ -30,16 +30,29 @@ class TransformerPredictor(Predictor):
     ):
         super().__init__()
 
-        transformer_enc_layer = nn.TransformerEncoderLayer(
+        transformer_enc_layer = ModifiedTransformerEncoderLayer(
             d_model=d_model,
             nhead=num_heads,
             dim_feedforward=ffn_dim,
             norm_first=norm_first,
             batch_first=True)
+
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer=transformer_enc_layer, num_layers=num_layers)
 
+        # store attention weights for each layer
+        self.attention_weights = []
+
+        # hook only works for ModifiedTransformerEncoderLayer which has last_attn_weights
+        def attention_weight_hook(module, input, output):
+            self.attention_weights.append(module.last_attn_weights)
+
+        for layer in self.transformer_encoder.layers:
+            layer.register_forward_hook(attention_weight_hook)
+
     def forward(self, x):
+        # clear previously saved attention weights
+        self.attention_weights.clear()
         out = self.transformer_encoder(x)
         return out
 
@@ -133,3 +146,25 @@ class RNNPredictorWrapper(Predictor):
         """Clear the RNN hidden state."""
         self.step = 0
         self.hidden_state = None
+
+
+class ModifiedTransformerEncoderLayer(nn.TransformerEncoderLayer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_attn_weights = None
+
+    def forward(self, src, *args, **kwargs):
+        return super().forward(src, *args, **kwargs)
+
+    def _sa_block(self, x, attn_mask, key_padding_mask, is_causal=False):
+        x, weights = self.self_attn(
+            x,
+            x,
+            x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            is_causal=is_causal,
+        )
+        self.last_attn_weights = weights
+        return self.dropout1(x)
