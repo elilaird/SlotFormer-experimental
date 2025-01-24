@@ -118,7 +118,7 @@ def main(params):
 
     model = build_model(params).eval().cuda()
     model.load_state_dict(
-        torch.load(args.weight, map_location='cpu')['state_dict'])
+        torch.load(args.weight, map_location='cpu', weights_only=True)['state_dict'])
 
     history_len = params.input_frames
     rollout_len = params.n_sample_frames - history_len

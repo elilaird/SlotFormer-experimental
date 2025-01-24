@@ -58,3 +58,10 @@ python slotformer/video_prediction/test_vp.py \
 This will compute and print all the metrics.
 Besides, it will also save 10 videos for visualization under `vis/obj3d/$PARAMS/`.
 If you only want to do visualizations (i.e. not testing the metrics), simply use the `--save_num` args and set it to a positive value.
+
+
+## Testing SlotFormer on OBJ3D
+```
+GPUS=1 CPUS_PER_GPU=8 MEM_PER_CPU=5 QOS=normal TIME=00:30:00 ./scripts/sbatch_run.sh short test_sbatch slotformer/video_prediction/test_vp.py cpu --
+params slotformer/video_prediction/configs/slotformer_obj3d_params.py --weight pretrained/savi_obj3d_params/model_40.pth --save_num 1
+```

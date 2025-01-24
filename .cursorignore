@@ -1,0 +1,17 @@
+data
+checkpoint
+nerv
+pretrained
+*.egg-info
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.py3
+*.py37
+*.py38
+*.py39
+*.py310
+*.py311
+*.py312

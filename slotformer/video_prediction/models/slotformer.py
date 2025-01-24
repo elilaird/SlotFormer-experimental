@@ -216,7 +216,7 @@ class SlotFormer(BaseModel):
         # load pretrained weight
         ckp_path = self.dec_dict['dec_ckp_path']
         assert ckp_path, 'Please provide pretrained decoder weight'
-        w = torch.load(ckp_path, map_location='cpu')['state_dict']
+        w = torch.load(ckp_path, map_location='cpu', weights_only=True)['state_dict']
         dec_w = {k[8:]: v for k, v in w.items() if k.startswith('decoder.')}
         dec_pe_w = {
             k[22:]: v

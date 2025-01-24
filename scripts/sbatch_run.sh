@@ -8,6 +8,10 @@
 # An example usage:
 #     GPUS=1 CPUS_PER_GPU=8 MEM_PER_CPU=5 QOS=normal ./scripts/sbatch_run.sh rtx6000 \
 #         test-sbatch test.py ddp --params params.py --fp16 --ddp --cudnn
+
+# video prediction obj3d example
+# GPUS=1 CPUS_PER_GPU=8 MEM_PER_CPU=5 QOS=normal TIME=00:30:00 ./scripts/sbatch_run.sh short test_sbatch slotformer/video_pre
+# diction/test_vp.py ddp --params slotformer/video_prediction/configs/slotformer_obj3d_params.py --fp16 --cudnn
 #######################################################################
 
 # read args from command line
@@ -26,8 +30,9 @@ DDP=$4
 SLRM_NAME="${JOB_NAME/\//"_"}"
 LOG_DIR=checkpoint/"$(basename -- $JOB_NAME)"
 DATETIME=$(date "+%Y-%m-%d_%H:%M:%S")
-LOG_FILE=$LOG_DIR/${DATETIME}.log
+LOG_FILE=$LOG_DIR/${SLRM_NAME}_${DATETIME}_%j.log
 CPUS_PER_TASK=$((GPUS * CPUS_PER_GPU))
+
 
 # set up log output folder
 mkdir -p $LOG_DIR
@@ -42,41 +47,38 @@ else
 fi
 
 # write to new file
-echo "#!/bin/bash
+echo "#!/usr/bin/env zsh
 
 # set up SBATCH args
 #SBATCH --job-name=$SLRM_NAME
+#SBATCH -A coreyc_coreyc_mp_jepa_0001
 #SBATCH --output=$LOG_FILE
-#SBATCH --error=$LOG_FILE
-#SBATCH --open-mode=append
 #SBATCH --partition=$PARTITION                       # self-explanatory, set to your preference (e.g. gpu or cpu on MaRS, p100, t4, or cpu on Vaughan)
 #SBATCH --cpus-per-task=$CPUS_PER_TASK               # self-explanatory, set to your preference
 #SBATCH --ntasks=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-cpu=${MEM_PER_CPU}G                # self-explanatory, set to your preference
-#SBATCH --gres=gpu:$GPUS                             # NOTE: you need a GPU for CUDA support; self-explanatory, set to your preference 
+#SBATCH -G $GPUS                             # NOTE: you need a GPU for CUDA support; self-explanatory, set to your preference 
 #SBATCH --nodes=1
-#SBATCH --qos=$QOS                                   # for 'high' and 'deadline' QoS, refer to https://support.vectorinstitute.ai/AboutVaughan2
 #SBATCH --time=$TIME                                 # running time limit, 0 as unlimited
 
 # log some necessary environment params
-echo \$SLURM_JOB_ID >> $LOG_FILE                      # log the job id
-echo \$SLURM_JOB_PARTITION >> $LOG_FILE               # log the job partition
+echo \$SLURM_JOB_ID                       # log the job id
+echo \$SLURM_JOB_PARTITION                # log the job partition
 
-echo $CONDA_PREFIX >> $LOG_FILE                      # log the active conda environment 
+echo $CONDA_PREFIX                       # log the active conda environment 
 
-python --version >> $LOG_FILE                        # log Python version
-gcc --version >> $LOG_FILE                           # log GCC version
-nvcc --version >> $LOG_FILE                          # log NVCC version
+python --version                         # log Python version
+gcc --version                            # log GCC version
 
 # run python file
-$PYTHON $PY_FILE $PY_ARGS >> $LOG_FILE                # the script above, with its standard output appended log file
+$PYTHON $PY_FILE $PY_ARGS
 
-" >> ./run-${SLRM_NAME}.slrm
+" >> ./run-${SLRM_NAME}.sbatch
 
 # run the created file
-sbatch run-${SLRM_NAME}.slrm
+sbatch run-${SLRM_NAME}.sbatch
 
 # delete it
 sleep 0.1
-rm -f run-${SLRM_NAME}.slrm
+rm -f run-${SLRM_NAME}.sbatch
