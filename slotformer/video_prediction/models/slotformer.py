@@ -45,6 +45,40 @@ class Rollouter(nn.Module):
         pass
 
 
+def get_intra_timestep_attention(self, attention_weights, timestep=-1):
+    """Extract attention weights between slots at a specific timestep.
+
+    Args:
+        attention_weights: List[Tensor] of shape [B, num_heads, T*N, T*N]
+        timestep: Which timestep to analyze (0 to history_len-1)
+
+    Returns:
+        List[Tensor] of shape [B, num_heads, N, N] for each layer
+        where N is num_slots
+    """
+    # ... existing code ...
+    intra_timestep_weights = []
+    for layer_weights in attention_weights:
+        B, H, L, _ = layer_weights.shape
+        # Reshape to separate timesteps and slots
+        reshaped = layer_weights.view(
+            B,
+            H,
+            self.history_len,
+            self.num_slots,
+            self.history_len,
+            self.num_slots,
+        )
+        # Get attention between slots at specified timestep
+        # This gets attention from slots at timestep t attending to slots at timestep t
+        timestep_weights = reshaped[
+            :, :, timestep, :, timestep, :
+        ]  # [B, H, N, N]
+        intra_timestep_weights.append(timestep_weights)
+
+    return intra_timestep_weights
+
+
 class SlotRollouter(Rollouter):
     """Transformer encoder only."""
 
@@ -82,10 +116,24 @@ class SlotRollouter(Rollouter):
         
         # store attention weights for each layer
         self.attention_weights = []
+        self.intra_timestep_weights = []  # new list for storing reshaped weights
 
-        # hook only works for ModifiedTransformerEncoderLayer which has last_attn_weights
+        # Modified hook that stores both raw and reshaped attention weights
         def attention_weight_hook(module, input, output):
-            self.attention_weights.append(module.last_attn_weights)
+            raw_weights = module.last_attn_weights  # [B, H, T*N, T*N]
+            self.attention_weights.append(raw_weights)
+            
+            # For raw_weights of shape [1, 36, 36], we need to handle it differently
+            # Since there's no explicit head dimension, we treat the first dim as batch
+            reshaped = raw_weights.view(
+                -1, self.history_len, self.num_slots,
+                self.history_len, self.num_slots
+            )
+            # Store attention between slots at the current timestep only
+            # Extract attention weights between slots at the last timestep
+            timestep_weights = reshaped[:, -1, :, -1, :]  # [B, N, N]
+            timestep_weights = timestep_weights.unsqueeze(1)  # [B, 1, N, N]
+            self.intra_timestep_weights.append(timestep_weights)
         
         for layer in self.transformer_encoder.layers:
             layer.register_forward_hook(attention_weight_hook)
@@ -106,8 +154,9 @@ class SlotRollouter(Rollouter):
         """
         assert x.shape[1] == self.history_len, 'wrong burn-in steps'
 
-        # clear previously saved attention weights
+        # Clear both types of stored weights at the start of forward pass
         self.attention_weights.clear()
+        self.intra_timestep_weights.clear()
 
         B = x.shape[0]
         x = x.flatten(1, 2)  # [B, T * N, slot_size]
@@ -254,6 +303,7 @@ class SlotFormer(BaseModel):
         B = past_slots.shape[0]  # [B, T, N, C]
         pred_slots = self.rollouter(past_slots[:, -self.history_len:],
                                     pred_len)
+
         # `decode` is usually called from outside
         # used to visualize an entire video (burn-in + rollout)
         # i.e. `with_gt` is True
@@ -272,6 +322,12 @@ class SlotFormer(BaseModel):
             }
             out_dict = {k: v.unflatten(0, (B, T)) for k, v in out_dict.items()}
             out_dict['slots'] = slots
+
+            # save attention weights
+            if self.rollouter.attention_weights:
+                out_dict['attention_weights'] = self.rollouter.attention_weights
+                out_dict['intra_timestep_weights'] = self.rollouter.intra_timestep_weights
+
             return out_dict
         # [B, pred_len, N, C]
         return pred_slots

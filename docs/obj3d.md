@@ -62,6 +62,5 @@ If you only want to do visualizations (i.e. not testing the metrics), simply use
 
 ## Testing SlotFormer on OBJ3D
 ```
-GPUS=1 CPUS_PER_GPU=8 MEM_PER_CPU=5 QOS=normal TIME=00:30:00 ./scripts/sbatch_run.sh short test_sbatch slotformer/video_prediction/test_vp.py cpu --
-params slotformer/video_prediction/configs/slotformer_obj3d_params.py --weight pretrained/savi_obj3d_params/model_40.pth --save_num 1
+GPUS=4 CPUS_PER_GPU=8 MEM_PER_CPU=8 QOS=normal TIME=00:30:00 ./scripts/sbatch_run.sh batch test_sbatch slotformer/video_prediction/test_vp.py cpu --params slotformer/video_prediction/configs/slotformer_obj3d_params.py --weight pretrained/slotformer_obj3d_params/model_200.pth
 ```
