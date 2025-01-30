@@ -9,7 +9,7 @@ from slotformer.base_slots.models import StoSAVi
 
 def get_sin_pos_enc(seq_len, d_model):
     """Sinusoid absolute positional encoding."""
-    inv_freq = 1. / (10000**(torch.arange(0.0, d_model, 2.0) / d_model))
+    inv_freq = 1.0 / (10000 ** (torch.arange(0.0, d_model, 2.0) / d_model))
     pos_seq = torch.arange(seq_len - 1, -1, -1).type_as(inv_freq)
     sinusoid_inp = torch.outer(pos_seq, inv_freq)
     pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=-1)
@@ -21,14 +21,15 @@ def build_pos_enc(pos_enc, input_len, d_model):
     if not pos_enc:
         return None
     # ViT, BEiT etc. all use zero-init learnable pos enc
-    if pos_enc == 'learnable':
+    if pos_enc == "learnable":
         pos_embedding = nn.Parameter(torch.zeros(1, input_len, d_model))
     # in SlotFormer, we find out that sine P.E. is already good enough
-    elif 'sin' in pos_enc:  # 'sin', 'sine'
+    elif "sin" in pos_enc:  # 'sin', 'sine'
         pos_embedding = nn.Parameter(
-            get_sin_pos_enc(input_len, d_model), requires_grad=False)
+            get_sin_pos_enc(input_len, d_model), requires_grad=False
+        )
     else:
-        raise NotImplementedError(f'unsupported pos enc {pos_enc}')
+        raise NotImplementedError(f"unsupported pos enc {pos_enc}")
     return pos_embedding
 
 
@@ -87,8 +88,8 @@ class SlotRollouter(Rollouter):
         num_slots,
         slot_size,
         history_len,  # burn-in steps
-        t_pe='sin',  # temporal P.E.
-        slots_pe='',  # slots P.E., None in SlotFormer
+        t_pe="sin",  # temporal P.E.
+        slots_pe="",  # slots P.E., None in SlotFormer
         # Transformer-related configs
         d_model=128,
         num_layers=4,
@@ -114,39 +115,51 @@ class SlotRollouter(Rollouter):
         )
 
         self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer=enc_layer, num_layers=num_layers)
-        
+            encoder_layer=enc_layer, num_layers=num_layers
+        )
+
         # store attention weights for each layer
         self.attention_weights = []
-        self.intra_timestep_weights = []  # new list for storing reshaped weights
+        self.intra_timestep_weights = (
+            []
+        )  # new list for storing reshaped weights
 
         # Modified hook that stores both raw and reshaped attention weights
         def attention_weight_hook(module, input, output):
             raw_weights = module.last_attn_weights  # [B, H, T*N, T*N]
             self.attention_weights.append(raw_weights)
-            
+
             # if dim = [B, T*N, T*N]
             if raw_weights.dim() == 3:
                 # For raw_weights of shape [1, 36, 36], we need to handle it differently
                 # Since there's no explicit head dimension, we treat the first dim as batch
                 reshaped = raw_weights.view(
-                    -1, self.history_len, self.num_slots,
-                    self.history_len, self.num_slots
+                    -1,
+                    self.history_len,
+                    self.num_slots,
+                    self.history_len,
+                    self.num_slots,
                 )
                 # Store attention between slots at the current timestep only
                 # Extract attention weights between slots at the last timestep
                 timestep_weights = reshaped[:, -1, :, -1, :]  # [B, N, N]
-                timestep_weights = timestep_weights.unsqueeze(1)  # [B, 1, N, N]
+                timestep_weights = timestep_weights.unsqueeze(
+                    1
+                )  # [B, 1, N, N]
                 self.intra_timestep_weights.append(timestep_weights)
             else:
                 B, H, L, _ = raw_weights.shape
                 reshaped = raw_weights.view(
-                    B, H, self.history_len, self.num_slots,
-                    self.history_len, self.num_slots
+                    B,
+                    H,
+                    self.history_len,
+                    self.num_slots,
+                    self.history_len,
+                    self.num_slots,
                 )
                 timestep_weights = reshaped[:, :, -1, :, -1, :]  # [B, H, N, N]
                 self.intra_timestep_weights.append(timestep_weights)
-        
+
         for layer in self.transformer_encoder.layers:
             layer.register_forward_hook(attention_weight_hook)
 
@@ -164,7 +177,7 @@ class SlotRollouter(Rollouter):
         Returns:
             [B, pred_len, num_slots, slot_size]
         """
-        assert x.shape[1] == self.history_len, 'wrong burn-in steps'
+        assert x.shape[1] == self.history_len, "wrong burn-in steps"
 
         # Clear both types of stored weights at the start of forward pass
         self.attention_weights.clear()
@@ -176,12 +189,18 @@ class SlotRollouter(Rollouter):
 
         # temporal_pe repeat for each slot, shouldn't be None
         # [1, T, D] --> [B, T, N, D] --> [B, T * N, D]
-        enc_pe = self.enc_t_pe.unsqueeze(2).\
-            repeat(B, 1, self.num_slots, 1).flatten(1, 2)
+        enc_pe = (
+            self.enc_t_pe.unsqueeze(2)
+            .repeat(B, 1, self.num_slots, 1)
+            .flatten(1, 2)
+        )
         # slots_pe repeat for each timestep
         if self.enc_slots_pe is not None:
-            slots_pe = self.enc_slots_pe.unsqueeze(1).\
-                repeat(B, self.history_len, 1, 1).flatten(1, 2)
+            slots_pe = (
+                self.enc_slots_pe.unsqueeze(1)
+                .repeat(B, self.history_len, 1, 1)
+                .flatten(1, 2)
+            )
             enc_pe = slots_pe + enc_pe
 
         # generate future slots autoregressively
@@ -194,12 +213,12 @@ class SlotRollouter(Rollouter):
             # spatio-temporal interaction via transformer
             x = self.transformer_encoder(x)
             # take the last N output tokens to predict slots
-            pred_slots = self.out_proj(x[:, -self.num_slots:])
+            pred_slots = self.out_proj(x[:, -self.num_slots :])
             pred_out.append(pred_slots)
             # feed the predicted slots autoregressively
-            in_x = torch.cat([in_x[:, self.num_slots:], pred_out[-1]], dim=1)
+            in_x = torch.cat([in_x[:, self.num_slots :], pred_out[-1]], dim=1)
 
-        print(f"saved attention weights: {len(self.attention_weights)}")
+        # print(f"saved attention weights: {len(self.attention_weights)}")
         return torch.stack(pred_out, dim=1)
 
     @property
@@ -215,37 +234,37 @@ class SlotFormer(BaseModel):
     """Transformer-based autoregressive dynamics model over slots."""
 
     def __init__(
-            self,
-            resolution,
-            clip_len,
-            slot_dict=dict(
-                num_slots=7,
-                slot_size=128,
-            ),
-            dec_dict=dict(
-                dec_channels=(128, 64, 64, 64, 64),
-                dec_resolution=(8, 8),
-                dec_ks=5,
-                dec_norm='',
-                dec_ckp_path='',
-            ),
-            rollout_dict=dict(
-                num_slots=7,
-                slot_size=128,
-                history_len=6,
-                t_pe='sin',
-                slots_pe='',
-                d_model=128,
-                num_layers=4,
-                num_heads=8,
-                ffn_dim=512,
-                norm_first=True,
-            ),
-            loss_dict=dict(
-                rollout_len=6,
-                use_img_recon_loss=False,
-            ),
-            eps=1e-6,
+        self,
+        resolution,
+        clip_len,
+        slot_dict=dict(
+            num_slots=7,
+            slot_size=128,
+        ),
+        dec_dict=dict(
+            dec_channels=(128, 64, 64, 64, 64),
+            dec_resolution=(8, 8),
+            dec_ks=5,
+            dec_norm="",
+            dec_ckp_path="",
+        ),
+        rollout_dict=dict(
+            num_slots=7,
+            slot_size=128,
+            history_len=6,
+            t_pe="sin",
+            slots_pe="",
+            d_model=128,
+            num_layers=4,
+            num_heads=8,
+            ffn_dim=512,
+            norm_first=True,
+        ),
+        loss_dict=dict(
+            rollout_len=6,
+            use_img_recon_loss=False,
+        ),
+        eps=1e-6,
     ):
         super().__init__()
 
@@ -263,26 +282,28 @@ class SlotFormer(BaseModel):
         self._build_rollouter()
         self._build_loss()
 
-
         self.testing = False  # for compatibility
-        self.loss_decay_factor = 1.  # temporal loss weighting
+        self.loss_decay_factor = 1.0  # temporal loss weighting
 
     def _build_slot_attention(self):
-        self.num_slots = self.slot_dict['num_slots']
-        self.slot_size = self.slot_dict['slot_size']
+        self.num_slots = self.slot_dict["num_slots"]
+        self.slot_size = self.slot_dict["slot_size"]
 
     def _build_decoder(self):
         # build the same CNN decoder as in SAVi
         StoSAVi._build_decoder(self)
 
         # load pretrained weight
-        ckp_path = self.dec_dict['dec_ckp_path']
-        assert ckp_path, 'Please provide pretrained decoder weight'
-        w = torch.load(ckp_path, map_location='cpu', weights_only=True)['state_dict']
-        dec_w = {k[8:]: v for k, v in w.items() if k.startswith('decoder.')}
+        ckp_path = self.dec_dict["dec_ckp_path"]
+        assert ckp_path, "Please provide pretrained decoder weight"
+        w = torch.load(ckp_path, map_location="cpu", weights_only=True)[
+            "state_dict"
+        ]
+        dec_w = {k[8:]: v for k, v in w.items() if k.startswith("decoder.")}
         dec_pe_w = {
             k[22:]: v
-            for k, v in w.items() if k.startswith('decoder_pos_embedding.')
+            for k, v in w.items()
+            if k.startswith("decoder_pos_embedding.")
         }
         self.decoder.load_state_dict(dec_w)
         self.decoder_pos_embedding.load_state_dict(dec_pe_w)
@@ -298,13 +319,13 @@ class SlotFormer(BaseModel):
     def _build_rollouter(self):
         """Predictor as in SAVi to transition slot from time t to t+1."""
         # Build Rollouter
-        self.history_len = self.rollout_dict['history_len']  # burn-in steps
+        self.history_len = self.rollout_dict["history_len"]  # burn-in steps
         self.rollouter = SlotRollouter(**self.rollout_dict)
 
     def _build_loss(self):
         """Loss calculation settings."""
-        self.rollout_len = self.loss_dict['rollout_len']  # rollout steps
-        self.use_img_recon_loss = self.loss_dict['use_img_recon_loss']
+        self.rollout_len = self.loss_dict["rollout_len"]  # rollout steps
+        self.use_img_recon_loss = self.loss_dict["use_img_recon_loss"]
 
     def decode(self, slots):
         """Decode from slots to reconstructed images and masks."""
@@ -314,8 +335,9 @@ class SlotFormer(BaseModel):
     def rollout(self, past_slots, pred_len, decode=False, with_gt=True):
         """Unroll slots for `pred_len` steps, potentially decode images."""
         B = past_slots.shape[0]  # [B, T, N, C]
-        pred_slots = self.rollouter(past_slots[:, -self.history_len:],
-                                    pred_len)
+        pred_slots = self.rollouter(
+            past_slots[:, -self.history_len :], pred_len
+        )
 
         # `decode` is usually called from outside
         # used to visualize an entire video (burn-in + rollout)
@@ -329,60 +351,88 @@ class SlotFormer(BaseModel):
                 slots = pred_slots
             recon_img, recons, masks, _ = self.decode(slots.flatten(0, 1))
             out_dict = {
-                'recon_combined': recon_img,  # [B*T, 3, H, W]
-                'recons': recons,  # [B*T, num_slots, 3, H, W]
-                'masks': masks,  # [B*T, num_slots, 1, H, W]
+                "recon_combined": recon_img,  # [B*T, 3, H, W]
+                "recons": recons,  # [B*T, num_slots, 3, H, W]
+                "masks": masks,  # [B*T, num_slots, 1, H, W]
             }
             out_dict = {k: v.unflatten(0, (B, T)) for k, v in out_dict.items()}
-            out_dict['slots'] = slots
+            out_dict["slots"] = slots
 
             # save attention weights
             if self.rollouter.attention_weights:
-                out_dict['attention_weights'] = self.rollouter.attention_weights
-                out_dict['intra_timestep_weights'] = self.rollouter.intra_timestep_weights
+                out_dict["attention_weights"] = (
+                    self.rollouter.attention_weights
+                )
+                out_dict["intra_timestep_weights"] = (
+                    self.rollouter.intra_timestep_weights
+                )
 
             return out_dict
         # [B, pred_len, N, C]
         return pred_slots
 
-    def forward(self, data_dict):
+    def forward(
+        self,
+        data_dict,
+        intervention_type=None,
+        intervention_scale=1.0,
+        slot_idx=0,
+    ):
         """Forward pass."""
-        slots = data_dict['slots']  # [B, T, N, C]
-        assert self.rollout_len + self.history_len == slots.shape[1], \
-            f'wrong SlotFormer training length {slots.shape[1]}'
-        past_slots = slots[:, :self.history_len]
-        gt_slots = slots[:, self.history_len:]
+        slots = data_dict["slots"]  # [B, T, N, C]
+        assert (
+            self.rollout_len + self.history_len == slots.shape[1]
+        ), f"wrong SlotFormer training length {slots.shape[1]}"
+        past_slots = slots[:, : self.history_len]
+        gt_slots = slots[:, self.history_len :]
         if self.use_img_recon_loss:
-            out_dict = self.rollout(
-                past_slots, self.rollout_len, decode=True, with_gt=False)
-            out_dict['pred_slots'] = out_dict.pop('slots')
-            out_dict['gt_slots'] = gt_slots  # both slots [B, pred_len, N, C]
+            if intervention_type is not None:
+                out_dict = self.intervene_and_rollout(
+                    past_slots,
+                    self.rollout_len,
+                    slot_idx=slot_idx,
+                    intervention_type=intervention_type,
+                    intervention_scale=intervention_scale,
+                    decode=True,
+                    with_gt=False,
+                )
+                intervened_out = out_dict["intervened_decoded"]
+                out_dict = out_dict["original_decoded"]
+            else:
+                out_dict = self.rollout(
+                    past_slots, self.rollout_len, decode=True, with_gt=False
+                )
+            out_dict["pred_slots"] = out_dict.pop("slots")
+            out_dict["gt_slots"] = gt_slots  # both slots [B, pred_len, N, C]
+            out_dict["intervened_slots"] = intervened_out
         else:
             pred_slots = self.rollout(
-                past_slots, self.rollout_len, decode=False)
+                past_slots, self.rollout_len, decode=False
+            )
             out_dict = {
-                'gt_slots': gt_slots,  # both slots [B, pred_len, N, C]
-                'pred_slots': pred_slots,
+                "gt_slots": gt_slots,  # both slots [B, pred_len, N, C]
+                "pred_slots": pred_slots,
             }
         return out_dict
 
     def calc_train_loss(self, data_dict, out_dict):
         """Compute training loss."""
         loss_dict = {}
-        gt_slots = out_dict['gt_slots']  # [B, rollout_T, N, C]
-        pred_slots = out_dict['pred_slots']
-        slots_loss = F.mse_loss(pred_slots, gt_slots, reduction='none')
+        gt_slots = out_dict["gt_slots"]  # [B, rollout_T, N, C]
+        pred_slots = out_dict["pred_slots"]
+        slots_loss = F.mse_loss(pred_slots, gt_slots, reduction="none")
 
         # compute per-step slot loss in eval time
         if not self.training:
             for step in range(min(6, gt_slots.shape[1])):
-                loss_dict[f'slot_recon_loss_{step+1}'] = \
-                    slots_loss[:, step].mean()
+                loss_dict[f"slot_recon_loss_{step+1}"] = slots_loss[
+                    :, step
+                ].mean()
 
         # apply temporal loss weighting as done in RPIN
         # penalize more for early steps, less for later steps
-        if self.loss_decay_factor < 1.:
-            w = self.loss_decay_factor**torch.arange(gt_slots.shape[1])
+        if self.loss_decay_factor < 1.0:
+            w = self.loss_decay_factor ** torch.arange(gt_slots.shape[1])
             w = w.type_as(slots_loss)
             # w should sum up to rollout_T
             w = w / w.sum() * gt_slots.shape[1]
@@ -390,26 +440,29 @@ class SlotFormer(BaseModel):
 
         # only compute loss on valid slots/imgs
         # e.g. in PHYRE, some videos are short, so we pad zero slots
-        vid_len = data_dict.get('vid_len', None)
+        vid_len = data_dict.get("vid_len", None)
         trunc_loss = False
-        if (vid_len is not None) and \
-                (vid_len < (self.history_len + self.rollout_len)).any():
+        if (vid_len is not None) and (
+            vid_len < (self.history_len + self.rollout_len)
+        ).any():
             trunc_loss = True
-            valid_mask = torch.arange(gt_slots.shape[1]).to(
-                gt_slots.device) + self.history_len
+            valid_mask = (
+                torch.arange(gt_slots.shape[1]).to(gt_slots.device)
+                + self.history_len
+            )
             valid_mask = valid_mask[None] < vid_len[:, None]  # [B, rollout_T]
             valid_mask = valid_mask.flatten(0, 1)
             slots_loss = slots_loss.flatten(0, 1)[valid_mask]
-        loss_dict['slot_recon_loss'] = slots_loss.mean()
+        loss_dict["slot_recon_loss"] = slots_loss.mean()
 
         if self.use_img_recon_loss:
-            recon_combined = out_dict['recon_combined']
-            gt_img = data_dict['img'][:, self.history_len:]
-            imgs_loss = F.mse_loss(recon_combined, gt_img, reduction='none')
+            recon_combined = out_dict["recon_combined"]
+            gt_img = data_dict["img"][:, self.history_len :]
+            imgs_loss = F.mse_loss(recon_combined, gt_img, reduction="none")
             # in case of truncated loss, we need to mask out invalid imgs
             if trunc_loss:
                 imgs_loss = imgs_loss.flatten(0, 1)[valid_mask]
-            loss_dict['img_recon_loss'] = imgs_loss.mean()
+            loss_dict["img_recon_loss"] = imgs_loss.mean()
         return loss_dict
 
     @property
@@ -427,16 +480,74 @@ class SlotFormer(BaseModel):
         self.decoder_pos_embedding.eval()
         return self
 
+    def intervene_and_rollout(
+        self,
+        past_slots,
+        pred_len=6,
+        slot_idx=0,
+        intervention_type="noise",
+        intervention_scale=1.0,
+        decode=True,
+        with_gt=False,
+    ):
+        """Perform intervention on a specific slot and observe effects through rollout.
+
+        Args:
+            past_slots: Input slots of shape [B, T, N, C]
+            slot_idx: Index of slot to intervene on (0 to num_slots-1)
+            intervention_type: String specifying type of intervention:
+                - "zero": Zero out the slot
+                - "noise": Add Gaussian noise
+            intervention_scale: Scale of intervention (for noise or attention)
+            pred_len: Number of steps to roll out after intervention
+
+        Returns:
+            Dictionary containing decoded outputs and attention patterns
+        """
+        B = past_slots.shape[0]
+
+        # Get original rollout for comparison
+        original_out = self.rollout(
+            past_slots, pred_len, decode=decode, with_gt=with_gt
+        )
+
+        # Create copy of slots for intervention
+        modified_slots = past_slots.clone()
+
+        # Different intervention types
+        if intervention_type == "zero":
+            # Simply zero out the slot - most direct way to remove its influence
+            modified_slots[:, :, slot_idx] = 0.0
+
+        elif intervention_type == "noise":
+            # Add random noise to the slot
+            noise = (
+                torch.randn_like(modified_slots[:, :, slot_idx])
+                * intervention_scale
+            )
+            modified_slots[:, :, slot_idx] += noise
+
+        # Perform rollout with intervention
+        intervened_out = self.rollout(
+            modified_slots, pred_len, decode=decode, with_gt=with_gt
+        )
+
+        return {
+            "original_decoded": original_out,
+            "intervened_decoded": intervened_out,
+        }
+
 
 class ModifiedTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
         # pop average_attn_weights from kwargs
-        self.average_attn_weights = kwargs.pop('average_attn_weights', True)
+        self.average_attn_weights = kwargs.pop("average_attn_weights", True)
         super().__init__(*args, **kwargs)
         self.last_attn_weights = None
+
     def forward(self, src, *args, **kwargs):
         return super().forward(src, *args, **kwargs)
-    
+
     def _sa_block(self, x, attn_mask, key_padding_mask, is_causal=False):
         x, weights = self.self_attn(
             x,
