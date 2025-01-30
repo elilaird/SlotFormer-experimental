@@ -95,12 +95,13 @@ class SlotRollouter(Rollouter):
         num_heads=8,
         ffn_dim=512,
         norm_first=True,
+        average_attn_weights=True,
     ):
         super().__init__()
 
         self.num_slots = num_slots
         self.history_len = history_len
-
+        self.average_attn_weights = average_attn_weights
         self.in_proj = nn.Linear(slot_size, d_model)
 
         enc_layer = ModifiedTransformerEncoderLayer(
@@ -109,6 +110,7 @@ class SlotRollouter(Rollouter):
             dim_feedforward=ffn_dim,
             norm_first=norm_first,
             batch_first=True,
+            average_attn_weights=self.average_attn_weights,
         )
 
         self.transformer_encoder = nn.TransformerEncoder(
@@ -123,17 +125,27 @@ class SlotRollouter(Rollouter):
             raw_weights = module.last_attn_weights  # [B, H, T*N, T*N]
             self.attention_weights.append(raw_weights)
             
-            # For raw_weights of shape [1, 36, 36], we need to handle it differently
-            # Since there's no explicit head dimension, we treat the first dim as batch
-            reshaped = raw_weights.view(
-                -1, self.history_len, self.num_slots,
-                self.history_len, self.num_slots
-            )
-            # Store attention between slots at the current timestep only
-            # Extract attention weights between slots at the last timestep
-            timestep_weights = reshaped[:, -1, :, -1, :]  # [B, N, N]
-            timestep_weights = timestep_weights.unsqueeze(1)  # [B, 1, N, N]
-            self.intra_timestep_weights.append(timestep_weights)
+            # if dim = [B, T*N, T*N]
+            if raw_weights.dim() == 3:
+                # For raw_weights of shape [1, 36, 36], we need to handle it differently
+                # Since there's no explicit head dimension, we treat the first dim as batch
+                reshaped = raw_weights.view(
+                    -1, self.history_len, self.num_slots,
+                    self.history_len, self.num_slots
+                )
+                # Store attention between slots at the current timestep only
+                # Extract attention weights between slots at the last timestep
+                timestep_weights = reshaped[:, -1, :, -1, :]  # [B, N, N]
+                timestep_weights = timestep_weights.unsqueeze(1)  # [B, 1, N, N]
+                self.intra_timestep_weights.append(timestep_weights)
+            else:
+                B, H, L, _ = raw_weights.shape
+                reshaped = raw_weights.view(
+                    B, H, self.history_len, self.num_slots,
+                    self.history_len, self.num_slots
+                )
+                timestep_weights = reshaped[:, :, -1, :, -1, :]  # [B, H, N, N]
+                self.intra_timestep_weights.append(timestep_weights)
         
         for layer in self.transformer_encoder.layers:
             layer.register_forward_hook(attention_weight_hook)
@@ -250,6 +262,7 @@ class SlotFormer(BaseModel):
         self._build_decoder()
         self._build_rollouter()
         self._build_loss()
+
 
         self.testing = False  # for compatibility
         self.loss_decay_factor = 1.  # temporal loss weighting
@@ -417,9 +430,10 @@ class SlotFormer(BaseModel):
 
 class ModifiedTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
+        # pop average_attn_weights from kwargs
+        self.average_attn_weights = kwargs.pop('average_attn_weights', True)
         super().__init__(*args, **kwargs)
         self.last_attn_weights = None
-
     def forward(self, src, *args, **kwargs):
         return super().forward(src, *args, **kwargs)
     
@@ -432,6 +446,7 @@ class ModifiedTransformerEncoderLayer(nn.TransformerEncoderLayer):
             key_padding_mask=key_padding_mask,
             need_weights=True,
             is_causal=is_causal,
+            average_attn_weights=self.average_attn_weights,
         )
         self.last_attn_weights = weights
         return self.dropout1(x)
