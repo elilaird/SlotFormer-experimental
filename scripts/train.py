@@ -12,6 +12,14 @@ import torch
 from nerv.utils import mkdir_or_exist
 from nerv.training import BaseDataModule
 
+import warnings
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message="enable_nested_tensor is True, but self.use_nested_tensor is False because*",
+    )
+
 
 def main(params):
     # build datamodule
@@ -31,7 +39,8 @@ def main(params):
 
     # create checkpoint dir
     exp_name = os.path.basename(args.params)
-    ckp_path = os.path.join('./checkpoint/', exp_name, 'models')
+    SLURM_JOB_ID = os.environ.get('SLURM_JOB_ID')
+    ckp_path = os.path.join('./checkpoints/', exp_name, SLURM_JOB_ID)
     if args.local_rank == 0:
         mkdir_or_exist(os.path.dirname(ckp_path))
 
@@ -39,17 +48,20 @@ def main(params):
         # soft link to save the weights in temp space for checkpointing
         # e.g. on our cluster, the temp dir is /checkpoint/$USR/$SLURM_JOB_ID/
         # TODO: modify this if you are not running on clusters
-        SLURM_JOB_ID = os.environ.get('SLURM_JOB_ID')
-        if SLURM_JOB_ID and not os.path.exists(ckp_path):
-            os.system(r'ln -s /checkpoint/{}/{}/ {}'.format(
-                pwd.getpwuid(os.getuid())[0], SLURM_JOB_ID, ckp_path))
+        SCRATCH_DIR = os.environ.get('SCRATCH')  # Get SCRATCH directory from environment
+        if SLURM_JOB_ID and not os.path.exists(ckp_path) and SCRATCH_DIR:
+            scratch_checkpoint_path = os.path.join(SCRATCH_DIR, 'checkpoints', exp_name, SLURM_JOB_ID)
+            # Create the directory in SCRATCH if it doesn't exist
+            os.makedirs(scratch_checkpoint_path, exist_ok=True)
+            # Create symbolic link
+            os.system(f'ln -s {scratch_checkpoint_path} {ckp_path}')
 
         # it's not good to hard-code the wandb id
         # but on preemption clusters, we want the job to resume the same wandb
         # process after resuming training (i.e. drawing the same graph)
         # so we have to keep the same wandb id
         # TODO: modify this if you are not running on preemption clusters
-        preemption = True
+        preemption = False
         if SLURM_JOB_ID and preemption:
             logger_id = logger_name = f'{exp_name}-{SLURM_JOB_ID}'
         else:
@@ -84,7 +96,7 @@ if __name__ == "__main__":
     parser.add_argument('--fp16', action='store_true', help='half-precision')
     parser.add_argument('--ddp', action='store_true', help='DDP training')
     parser.add_argument('--cudnn', action='store_true', help='cudnn benchmark')
-    parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument('--local-rank', type=int, default=0)
     args = parser.parse_args()
 
     # import `build_dataset/model/method` function according to `args.task`

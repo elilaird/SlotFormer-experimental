@@ -13,6 +13,29 @@ from .predictor import ResidualMLPPredictor, TransformerPredictor, \
     RNNPredictorWrapper
 
 
+class ModernHopfield(nn.Module):
+    def __init__(self, slot_size, beta=1.0):
+        super().__init__()
+        self.slot_size = slot_size
+        self.beta = beta  # inverse temperature parameter
+        
+        self.project_stored = nn.Linear(slot_size, slot_size, bias=False)
+        self.project_update = nn.Linear(slot_size, slot_size, bias=False)
+    
+    def forward(self, updates, slots_prev):
+        stored = self.project_stored(slots_prev)
+        update = self.project_update(updates)
+        
+        # Compute attention scores
+        scores = torch.einsum('bic,bjc->bij', stored, update) * self.beta
+        
+        # Apply softmax and update
+        attention = torch.softmax(scores, dim=-1)
+        new_slots = torch.einsum('bij,bjc->bic', attention, update)
+        
+        return new_slots
+
+
 class SlotAttention(nn.Module):
     """Slot attention module that iteratively performs cross-attention."""
 
