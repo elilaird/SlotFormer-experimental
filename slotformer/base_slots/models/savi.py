@@ -47,6 +47,8 @@ class SlotAttention(nn.Module):
         slot_size,
         mlp_hidden_size,
         eps=1e-6,
+        update_type='gru',
+        beta=1.0,
     ):
         super().__init__()
         self.in_features = in_features
@@ -56,6 +58,7 @@ class SlotAttention(nn.Module):
         self.mlp_hidden_size = mlp_hidden_size
         self.eps = eps
         self.attn_scale = self.slot_size**-0.5
+        self.update_type = update_type
 
         self.norm_inputs = nn.LayerNorm(self.in_features)
 
@@ -68,13 +71,20 @@ class SlotAttention(nn.Module):
         self.project_v = nn.Linear(in_features, self.slot_size, bias=False)
 
         # Slot update functions.
-        self.gru = nn.GRUCell(self.slot_size, self.slot_size)
-        self.mlp = nn.Sequential(
-            nn.LayerNorm(self.slot_size),
-            nn.Linear(self.slot_size, self.mlp_hidden_size),
-            nn.ReLU(),
-            nn.Linear(self.mlp_hidden_size, self.slot_size),
-        )
+        if self.update_type == 'gru':
+            self.gru = nn.GRUCell(self.slot_size, self.slot_size)
+            self.mlp = nn.Sequential(
+                nn.LayerNorm(self.slot_size),
+                nn.Linear(self.slot_size, self.mlp_hidden_size),
+                nn.ReLU(),
+                nn.Linear(self.mlp_hidden_size, self.slot_size),
+            )
+        elif self.update_type == 'hopfield':
+            self.hopfield = ModernHopfield(self.slot_size, beta=beta)
+        else:
+            raise ValueError(f'Invalid update type: {self.update_type}')
+
+       
 
     def forward(self, inputs, slots):
         """Forward function.
@@ -115,12 +125,15 @@ class SlotAttention(nn.Module):
             # Slot update.
             # GRU is expecting inputs of size (N, L)
             # so flatten batch and slots dimension
-            slots = self.gru(
-                updates.view(bs * self.num_slots, self.slot_size),
-                slots_prev.view(bs * self.num_slots, self.slot_size),
-            )
-            slots = slots.view(bs, self.num_slots, self.slot_size)
-            slots = slots + self.mlp(slots)
+            if self.update_type == 'gru':
+                slots = self.gru(
+                    updates.view(bs * self.num_slots, self.slot_size),
+                    slots_prev.view(bs * self.num_slots, self.slot_size),
+                )
+                slots = slots.view(bs, self.num_slots, self.slot_size)
+                slots = slots + self.mlp(slots)
+            elif self.update_type == 'hopfield':
+                slots = slots + self.hopfield(updates, slots_prev)
 
         return slots
 
@@ -148,6 +161,8 @@ class StoSAVi(BaseModel):
             slot_mlp_size=256,
             num_iterations=2,
             kernel_mlp=True,
+            update_type='gru',
+            beta=1.0,
         ),
         enc_dict=dict(
             enc_channels=(3, 64, 64, 64, 64),
@@ -205,6 +220,8 @@ class StoSAVi(BaseModel):
         self.slot_size = self.slot_dict['slot_size']
         self.slot_mlp_size = self.slot_dict['slot_mlp_size']
         self.num_iterations = self.slot_dict['num_iterations']
+        self.update_type = self.slot_dict['update_type']
+        self.beta = self.slot_dict['beta']
 
         # directly use learnable embeddings for each slot
         self.init_latents = nn.Parameter(
@@ -238,6 +255,8 @@ class StoSAVi(BaseModel):
             slot_size=self.slot_size,
             mlp_hidden_size=self.slot_mlp_size,
             eps=self.eps,
+            update_type=self.update_type,
+            beta=self.beta,
         )
 
     def _build_encoder(self):

@@ -33,7 +33,6 @@ DATETIME=$(date "+%Y-%m-%d_%H:%M:%S")
 LOG_FILE=$LOG_DIR/${SLRM_NAME}_${DATETIME}_%j.log
 CPUS_PER_TASK=$((GPUS * CPUS_PER_GPU))
 
-
 # set up log output folder
 mkdir -p $LOG_DIR
 
@@ -66,6 +65,11 @@ echo "#!/usr/bin/env zsh
 echo \$SLURM_JOB_ID                       # log the job id
 echo \$SLURM_JOB_PARTITION                # log the job partition
 
+module purge
+module load conda
+conda activate /users/ejlaird/.conda/envs/slotformer
+
+which python
 echo $CONDA_PREFIX                       # log the active conda environment 
 
 python --version                         # log Python version
